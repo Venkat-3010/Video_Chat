@@ -4,11 +4,17 @@ import "./App.css";
 
 const App = () => {
   const [activeUsers, setActiveUsers] = useState([]);
-  const [talkingWith, setTalkingWith] = useState(""); // Track current call state
-  const [incomingCall, setIncomingCall] = useState(null); // Track incoming call state
+  const [talkingWith, setTalkingWith] = useState(""); 
+  const [incomingCall, setIncomingCall] = useState(null); 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const peerConnection = useRef(new RTCPeerConnection());
+  const peerConnection = useRef(new RTCPeerConnection({
+    iceServers: [
+      {
+        urls: "stun:stun.l.google.com:19302"
+      }
+    ]
+  }));  
   const socket = useRef(null);
   const [isAlreadyCalling, setIsAlreadyCalling] = useState(false);
   const [getCalled, setGetCalled] = useState(false);
@@ -64,10 +70,9 @@ const App = () => {
     });
 
     socket.current.on("call-made", async (data) => {
-      // Prevent multiple popups for the same call
       if (getCalled || incomingCall) return;
 
-      setIncomingCall(data); // Show the incoming call UI
+      setIncomingCall(data); 
     });
 
     socket.current.on("answer-made", async (data) => {
@@ -83,13 +88,13 @@ const App = () => {
     socket.current.on("call-rejected", (data) => {
       alert(`User: "Socket: ${data.socket}" rejected your call.`);
       setTalkingWith("");
-      setIncomingCall(null); // Clear the incoming call after rejection
+      setIncomingCall(null); 
     });
 
     return () => {
       socket.current.disconnect();
     };
-  }, [getCalled, incomingCall]); // Include getCalled and incomingCall as dependencies
+  }, [getCalled, incomingCall]); 
 
   const callUser = async (socketId) => {
     const offer = await peerConnection.current.createOffer();
@@ -124,15 +129,15 @@ const App = () => {
       to: callerSocket,
     });
 
-    setTalkingWith(callerSocket); // Start talking with the caller
-    setGetCalled(true); // You are now in a call
-    setIncomingCall(null); // Reset the incoming call state
+    setTalkingWith(callerSocket); 
+    setGetCalled(true); 
+    setIncomingCall(null); 
   };
 
   const rejectCall = () => {
     if (!incomingCall) return;
     socket.current.emit("reject-call", { from: incomingCall.socket });
-    setIncomingCall(null); // Clear the incoming call state after rejection
+    setIncomingCall(null); 
   };
 
   return (
