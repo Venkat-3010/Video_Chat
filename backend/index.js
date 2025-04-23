@@ -48,6 +48,13 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("ice-candidate", (data) => {
+    io.to(data.to).emit("ice-candidate", {
+      candidate: data.candidate,
+      from: socket.id
+    });
+  });  
+
   socket.on("disconnect", () => {
     activeSockets = activeSockets.filter((id) => id !== socket.id);
     socket.broadcast.emit("remove-user", {
