@@ -8,6 +8,13 @@ const App = () => {
   const [incomingCall, setIncomingCall] = useState(null);
   const [isAlreadyCalling, setIsAlreadyCalling] = useState(false);
   const [getCalled, setGetCalled] = useState(false);
+  const [devices, setDevices] = useState({ audioIn: [], audioOut: [], videoIn: [] });
+  const [selectedMic, setSelectedMic] = useState("");
+  const [selectedSpeaker, setSelectedSpeaker] = useState("");
+  const [selectedCamera, setSelectedCamera] = useState("");
+  const [stream, setStream] = useState(null);
+  const [videoEnabled, setVideoEnabled] = useState(true);
+
   const hasAcceptedCall = useRef(false);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -24,20 +31,46 @@ const App = () => {
   useEffect(() => {
     socket.current = io("https://video-chat-wjxh.onrender.com");
 
-    navigator.mediaDevices
-      .getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-        stream.getTracks().forEach((track) => {
-          peerConnection.current.addTrack(track, stream);
-        });
-      })
-      .catch((err) => {
-        console.error("getUserMedia error:", err);
+    const updateDeviceList = async () => {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioIn = devices.filter((d) => d.kind === "audioinput");
+      const audioOut = devices.filter((d) => d.kind === "audiooutput");
+      const videoIn = devices.filter((d) => d.kind === "videoinput");
+      setDevices({ audioIn, audioOut, videoIn });
+    };
+
+    updateDeviceList();
+
+    return () => socket.current.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const getMedia = async () => {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: selectedCamera ? { deviceId: selectedCamera } : true,
+        audio: selectedMic ? { deviceId: selectedMic } : true,
       });
 
+      setStream(newStream);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = newStream;
+      }
+
+      newStream.getTracks().forEach((track) => {
+        peerConnection.current.addTrack(track, newStream);
+      });
+    };
+
+    getMedia();
+  }, [selectedMic, selectedCamera]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current && selectedSpeaker && typeof remoteVideoRef.current.setSinkId === "function") {
+      remoteVideoRef.current.setSinkId(selectedSpeaker).catch(console.error);
+    }
+  }, [selectedSpeaker]);
+
+  useEffect(() => {
     peerConnection.current.onicecandidate = (event) => {
       if (event.candidate) {
         if (talkingWith) {
@@ -46,7 +79,6 @@ const App = () => {
             to: talkingWith,
           });
         } else {
-          // Queue if talkingWith not yet available
           iceCandidateQueue.current.push(event.candidate);
         }
       }
@@ -77,7 +109,6 @@ const App = () => {
       );
       isRemoteDescSet.current = true;
       flushCandidateQueue(data.socket);
-
       if (!isAlreadyCalling) {
         callUser(data.socket);
         setIsAlreadyCalling(true);
@@ -98,11 +129,7 @@ const App = () => {
         iceCandidateQueue.current.push(candidate);
       }
     });
-
-    return () => {
-      socket.current.disconnect();
-    };
-  }, []);
+  }, [getCalled]);
 
   const flushCandidateQueue = (toSocketId) => {
     iceCandidateQueue.current.forEach((candidate) => {
@@ -116,42 +143,27 @@ const App = () => {
 
   const callUser = async (socketId) => {
     const offer = await peerConnection.current.createOffer();
-    await peerConnection.current.setLocalDescription(
-      new RTCSessionDescription(offer)
-    );
-
-    socket.current.emit("call-user", {
-      offer,
-      to: socketId,
-    });
-
+    await peerConnection.current.setLocalDescription(offer);
+    socket.current.emit("call-user", { offer, to: socketId });
     setTalkingWith(socketId);
   };
 
   const handleUserClick = (socketId) => {
-    callUser(socketId); // handles setting talkingWith
+    callUser(socketId);
   };
 
   const acceptCall = async () => {
     if (!incomingCall || hasAcceptedCall.current) return;
-
     hasAcceptedCall.current = true;
 
     const { socket: callerSocket, offer } = incomingCall;
-
-    await peerConnection.current.setRemoteDescription(
-      new RTCSessionDescription(offer)
-    );
+    await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offer));
     isRemoteDescSet.current = true;
     flushCandidateQueue(callerSocket);
 
     const answer = await peerConnection.current.createAnswer();
     await peerConnection.current.setLocalDescription(answer);
-
-    socket.current.emit("make-answer", {
-      answer,
-      to: callerSocket,
-    });
+    socket.current.emit("make-answer", { answer, to: callerSocket });
 
     setTalkingWith(callerSocket);
     setGetCalled(true);
@@ -164,17 +176,54 @@ const App = () => {
     setIncomingCall(null);
   };
 
+  const toggleCamera = () => {
+    const videoTrack = stream?.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      setVideoEnabled(videoTrack.enabled);
+    }
+  };
+
+  const hangUp = () => {
+    peerConnection.current.getSenders().forEach((sender) => {
+      sender.track?.stop();
+    });
+    peerConnection.current.close();
+    window.location.reload();
+  };
+
   return (
     <div className="container">
+      <div className="device-selectors">
+        <select onChange={(e) => setSelectedMic(e.target.value)} value={selectedMic}>
+          <option value="">Select Microphone</option>
+          {devices.audioIn.map((d) => (
+            <option key={d.deviceId} value={d.deviceId}>{d.label || "Microphone"}</option>
+          ))}
+        </select>
+
+        <select onChange={(e) => setSelectedSpeaker(e.target.value)} value={selectedSpeaker}>
+          <option value="">Select Speaker</option>
+          {devices.audioOut.map((d) => (
+            <option key={d.deviceId} value={d.deviceId}>{d.label || "Speaker"}</option>
+          ))}
+        </select>
+
+        <select onChange={(e) => setSelectedCamera(e.target.value)} value={selectedCamera}>
+          <option value="">Select Camera</option>
+          {devices.videoIn.map((d) => (
+            <option key={d.deviceId} value={d.deviceId}>{d.label || "Camera"}</option>
+          ))}
+        </select>
+      </div>
+
       <div className="content-container">
         <div className="active-users-panel">
           <h3 className="panel-title">Active Users:</h3>
           {activeUsers.map((socketId) => (
             <div
               key={socketId}
-              className={`active-user ${
-                talkingWith === socketId ? "active-user--selected" : ""
-              }`}
+              className={`active-user ${talkingWith === socketId ? "active-user--selected" : ""}`}
               onClick={() => handleUserClick(socketId)}
             >
               <p className="username">Socket: {socketId}</p>
@@ -192,6 +241,15 @@ const App = () => {
             <video autoPlay muted ref={localVideoRef} className="local-video" />
           </div>
         </div>
+      </div>
+
+      <div className="control-buttons">
+        <button className="toggle-video-button" onClick={toggleCamera}>
+          {videoEnabled ? "Turn Camera Off" : "Turn Camera On"}
+        </button>
+        <button className="hangup-button" onClick={hangUp}>
+          Hang Up
+        </button>
       </div>
 
       {incomingCall && (
