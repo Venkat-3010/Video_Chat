@@ -22,7 +22,7 @@ const App = () => {
   );
 
   useEffect(() => {
-    socket.current = io("http://localhost:5000");
+    socket.current = io("https://video-chat-wjxh.onrender.com");
 
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
