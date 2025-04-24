@@ -28,6 +28,25 @@ const App = () => {
     })
   );
 
+  const attachPeerHandlers = () => {
+    peerConnection.current.onicecandidate = (event) => {
+      if (event.candidate && talkingWith) {
+        socket.current.emit("ice-candidate", {
+          candidate: event.candidate,
+          to: talkingWith,
+        });
+      } else if (event.candidate) {
+        iceCandidateQueue.current.push(event.candidate);
+      }
+    };
+
+    peerConnection.current.ontrack = (event) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+      }
+    };
+  };
+
   useEffect(() => {
     socket.current = io("https://video-chat-wjxh.onrender.com");
 
@@ -65,30 +84,17 @@ const App = () => {
   }, [selectedMic, selectedCamera]);
 
   useEffect(() => {
-    if (remoteVideoRef.current && selectedSpeaker && typeof remoteVideoRef.current.setSinkId === "function") {
+    if (
+      remoteVideoRef.current &&
+      selectedSpeaker &&
+      typeof remoteVideoRef.current.setSinkId === "function"
+    ) {
       remoteVideoRef.current.setSinkId(selectedSpeaker).catch(console.error);
     }
   }, [selectedSpeaker]);
 
   useEffect(() => {
-    peerConnection.current.onicecandidate = (event) => {
-      if (event.candidate) {
-        if (talkingWith) {
-          socket.current.emit("ice-candidate", {
-            candidate: event.candidate,
-            to: talkingWith,
-          });
-        } else {
-          iceCandidateQueue.current.push(event.candidate);
-        }
-      }
-    };
-
-    peerConnection.current.ontrack = (event) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-      }
-    };
+    attachPeerHandlers();
 
     socket.current.on("update-user-list", ({ users }) => {
       setActiveUsers(users);
@@ -157,7 +163,9 @@ const App = () => {
     hasAcceptedCall.current = true;
 
     const { socket: callerSocket, offer } = incomingCall;
-    await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offer));
+    await peerConnection.current.setRemoteDescription(
+      new RTCSessionDescription(offer)
+    );
     isRemoteDescSet.current = true;
     flushCandidateQueue(callerSocket);
 
@@ -185,11 +193,49 @@ const App = () => {
   };
 
   const hangUp = () => {
+    stream?.getTracks().forEach((track) => track.stop());
+
     peerConnection.current.getSenders().forEach((sender) => {
-      sender.track?.stop();
+      peerConnection.current.removeTrack(sender);
     });
+
     peerConnection.current.close();
-    window.location.reload();
+
+    peerConnection.current = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    attachPeerHandlers();
+
+    hasAcceptedCall.current = false;
+    isRemoteDescSet.current = false;
+    iceCandidateQueue.current = [];
+
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    setTalkingWith("");
+    setIncomingCall(null);
+    setIsAlreadyCalling(false);
+    setGetCalled(false);
+    setStream(null);
+
+    navigator.mediaDevices
+      .getUserMedia({
+        video: selectedCamera ? { deviceId: selectedCamera } : true,
+        audio: selectedMic ? { deviceId: selectedMic } : true,
+      })
+      .then((newStream) => {
+        setStream(newStream);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = newStream;
+        }
+        newStream.getTracks().forEach((track) => {
+          peerConnection.current.addTrack(track, newStream);
+        });
+      })
+      .catch(console.error);
   };
 
   return (
