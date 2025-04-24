@@ -36,6 +36,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("make-answer", (data) => {
+    // console.log(data);
     io.to(data.to).emit("answer-made", {
       socket: socket.id,
       answer: data.answer,
@@ -49,6 +50,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("ice-candidate", (data) => {
+    // console.log(data);
     io.to(data.to).emit("ice-candidate", {
       candidate: data.candidate,
       from: socket.id

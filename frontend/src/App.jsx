@@ -4,23 +4,25 @@ import "./App.css";
 
 const App = () => {
   const [activeUsers, setActiveUsers] = useState([]);
-  const [talkingWith, setTalkingWith] = useState(""); 
-  const [incomingCall, setIncomingCall] = useState(null); 
-  const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const peerConnection = useRef(new RTCPeerConnection({
-    iceServers: [
-      {
-        urls: "stun:stun.l.google.com:19302"
-      }
-    ]
-  }));  
-  const socket = useRef(null);
+  const [talkingWith, setTalkingWith] = useState("");
+  const [incomingCall, setIncomingCall] = useState(null);
   const [isAlreadyCalling, setIsAlreadyCalling] = useState(false);
   const [getCalled, setGetCalled] = useState(false);
+  const hasAcceptedCall = useRef(false);
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const socket = useRef(null);
+  const iceCandidateQueue = useRef([]);
+  const isRemoteDescSet = useRef(false);
+
+  const peerConnection = useRef(
+    new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    })
+  );
 
   useEffect(() => {
-    socket.current = io("https://video-chat-wjxh.onrender.com");
+    socket.current = io("http://localhost:5000");
 
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
@@ -28,36 +30,31 @@ const App = () => {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-        stream
-          .getTracks()
-          .forEach((track) => peerConnection.current.addTrack(track, stream));
+        stream.getTracks().forEach((track) => {
+          peerConnection.current.addTrack(track, stream);
+        });
       })
-      .catch((error) => {
-        console.warn(error.message);
+      .catch((err) => {
+        console.error("getUserMedia error:", err);
       });
 
     peerConnection.current.onicecandidate = (event) => {
       if (event.candidate) {
-        socket.current.emit("ice-candidate", {
-          candidate: event.candidate,
-          to: talkingWith,
-        });
+        if (talkingWith) {
+          socket.current.emit("ice-candidate", {
+            candidate: event.candidate,
+            to: talkingWith,
+          });
+        } else {
+          // Queue if talkingWith not yet available
+          iceCandidateQueue.current.push(event.candidate);
+        }
       }
     };
 
-    socket.current.on("ice-candidate", async (data) => {
-      try {
-        await peerConnection.current.addIceCandidate(
-          new RTCIceCandidate(data.candidate)
-        );
-      } catch (e) {
-        console.error("Error adding received ICE candidate", e);
-      }
-    });
-
-    peerConnection.current.ontrack = ({ streams: [stream] }) => {
+    peerConnection.current.ontrack = (event) => {
       if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = stream;
+        remoteVideoRef.current.srcObject = event.streams[0];
       }
     };
 
@@ -70,15 +67,17 @@ const App = () => {
     });
 
     socket.current.on("call-made", async (data) => {
-      if (getCalled || incomingCall) return;
-
-      setIncomingCall(data); 
+      if (hasAcceptedCall.current || incomingCall) return;
+      setIncomingCall(data);
     });
 
     socket.current.on("answer-made", async (data) => {
       await peerConnection.current.setRemoteDescription(
         new RTCSessionDescription(data.answer)
       );
+      isRemoteDescSet.current = true;
+      flushCandidateQueue(data.socket);
+
       if (!isAlreadyCalling) {
         callUser(data.socket);
         setIsAlreadyCalling(true);
@@ -88,13 +87,32 @@ const App = () => {
     socket.current.on("call-rejected", (data) => {
       alert(`User: "Socket: ${data.socket}" rejected your call.`);
       setTalkingWith("");
-      setIncomingCall(null); 
+      setIncomingCall(null);
+    });
+
+    socket.current.on("ice-candidate", async (data) => {
+      const candidate = new RTCIceCandidate(data.candidate);
+      if (isRemoteDescSet.current) {
+        await peerConnection.current.addIceCandidate(candidate);
+      } else {
+        iceCandidateQueue.current.push(candidate);
+      }
     });
 
     return () => {
       socket.current.disconnect();
     };
-  }, [getCalled, incomingCall]); 
+  }, []);
+
+  const flushCandidateQueue = (toSocketId) => {
+    iceCandidateQueue.current.forEach((candidate) => {
+      socket.current.emit("ice-candidate", {
+        candidate,
+        to: toSocketId,
+      });
+    });
+    iceCandidateQueue.current = [];
+  };
 
   const callUser = async (socketId) => {
     const offer = await peerConnection.current.createOffer();
@@ -106,38 +124,44 @@ const App = () => {
       offer,
       to: socketId,
     });
+
+    setTalkingWith(socketId);
   };
 
   const handleUserClick = (socketId) => {
-    setTalkingWith(socketId);
-    callUser(socketId);
+    callUser(socketId); // handles setting talkingWith
   };
 
   const acceptCall = async () => {
-    if (!incomingCall) return;
+    if (!incomingCall || hasAcceptedCall.current) return;
+
+    hasAcceptedCall.current = true;
+
     const { socket: callerSocket, offer } = incomingCall;
 
     await peerConnection.current.setRemoteDescription(
       new RTCSessionDescription(offer)
     );
+    isRemoteDescSet.current = true;
+    flushCandidateQueue(callerSocket);
+
     const answer = await peerConnection.current.createAnswer();
-    await peerConnection.current.setLocalDescription(
-      new RTCSessionDescription(answer)
-    );
+    await peerConnection.current.setLocalDescription(answer);
+
     socket.current.emit("make-answer", {
       answer,
       to: callerSocket,
     });
 
-    setTalkingWith(callerSocket); 
-    setGetCalled(true); 
-    setIncomingCall(null); 
+    setTalkingWith(callerSocket);
+    setGetCalled(true);
+    setIncomingCall(null);
   };
 
   const rejectCall = () => {
     if (!incomingCall) return;
     socket.current.emit("reject-call", { from: incomingCall.socket });
-    setIncomingCall(null); 
+    setIncomingCall(null);
   };
 
   return (
@@ -171,51 +195,16 @@ const App = () => {
       </div>
 
       {incomingCall && (
-        <div
-          style={{
-            position: "fixed",
-            top: "20%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            backgroundColor: "white",
-            padding: "20px",
-            border: "2px solid #444",
-            borderRadius: "10px",
-            zIndex: 1000,
-            boxShadow: "0 4px 10px rgba(0,0,0,0.2)",
-            textAlign: "center",
-          }}
-        >
-          <p style={{ fontSize: "18px", marginBottom: "10px" }}>
-            Incoming call from Socket: {incomingCall.socket}
-          </p>
-          <button
-            onClick={acceptCall}
-            style={{
-              padding: "10px 20px",
-              marginRight: "10px",
-              backgroundColor: "green",
-              color: "white",
-              border: "none",
-              borderRadius: "5px",
-              cursor: "pointer",
-            }}
-          >
-            Accept
-          </button>
-          <button
-            onClick={rejectCall}
-            style={{
-              padding: "10px 20px",
-              backgroundColor: "red",
-              color: "white",
-              border: "none",
-              borderRadius: "5px",
-              cursor: "pointer",
-            }}
-          >
-            Reject
-          </button>
+        <div className="incoming-call-popup">
+          <p>Incoming call from Socket: {incomingCall.socket}</p>
+          <div className="incoming-call-buttons">
+            <button className="accept-button" onClick={acceptCall}>
+              Accept
+            </button>
+            <button className="reject-button" onClick={rejectCall}>
+              Reject
+            </button>
+          </div>
         </div>
       )}
     </div>
